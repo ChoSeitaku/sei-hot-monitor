@@ -131,13 +131,17 @@ async function addSubscription(subscription) {
 
 async function sendBrowserNotification(payload) {
   const subscriptions = await getSubscriptions();
+  console.log('[push] 发送通知，订阅数:', subscriptions.length);
   for (const sub of subscriptions) {
     try {
       await webPush.sendNotification(sub, JSON.stringify(payload));
+      console.log('[push] 推送成功:', sub.endpoint.slice(0, 80) + '...');
     } catch (error) {
-      if (error.statusCode === 410 || error.statusCode === 404) {
-        const filtered = subscriptions.filter((item) => item.endpoint !== sub.endpoint);
-        await saveSubscriptions(filtered);
+      console.error('[push] 推送失败:', error.statusCode, error.message, 'endpoint:', sub.endpoint.slice(0, 80) + '...');
+      if (error.statusCode === 410 || error.statusCode === 404 || error.statusCode === 401) {
+        const remaining = subscriptions.filter((item) => item.endpoint !== sub.endpoint);
+        await saveSubscriptions(remaining);
+        console.log('[push] 已清理无效订阅 (statusCode=' + error.statusCode + ')，剩余:', remaining.length);
       }
     }
   }
@@ -230,26 +234,34 @@ async function fetchBingSearch(query) {
 }
 
 async function fetchDuckDuckGo(query) {
-  try {
-    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&t=h_`;
-    const res = await safeFetch(url);
-    if (!res.ok) return [];
-    const html = await res.text();
-    const $ = cheerioLoad(html);
-    const items = [];
-    $('a.result__a').each((_, el) => {
-      const title = $(el).text().trim();
-      const link = $(el).attr('href');
-      if (title && link) {
-        items.push({ source: 'DuckDuckGo', title, url: link });
+  const urls = [
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&t=h_`,
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`
+  ];
+  for (const url of urls) {
+    try {
+      const res = await safeFetch(url);
+      if (!res.ok) continue;
+      const html = await res.text();
+      const $ = cheerioLoad(html);
+      const items = [];
+      $('a.result__a, a.result-link').each((_, el) => {
+        const title = $(el).text().trim();
+        const link = $(el).attr('href');
+        if (title && link) {
+          items.push({ source: 'DuckDuckGo', title, url: link });
+        }
+      });
+      if (items.length > 0) {
+        console.log('[fetch] DDG 返回', items.length, '条');
+        return items.slice(0, 10);
       }
-    });
-    console.log('[fetch] DDG 返回', items.length, '条');
-    return items.slice(0, 10);
-  } catch (e) {
-    console.error('[fetch] DDG 错误:', e.message);
-    return [];
+    } catch (e) {
+      // try next fallback
+    }
   }
+  console.error('[fetch] DDG 所有 URL 均失败');
+  return [];
 }
 
 async function fetchBingNews(query) {
@@ -275,6 +287,111 @@ async function fetchBingNews(query) {
   }
 }
 
+async function fetchSogou(query) {
+  try {
+    const url = `https://www.sogou.com/web?query=${encodeURIComponent(query)}`;
+    const res = await safeFetch(url, { timeoutMs: 12000 });
+    if (!res.ok) return [];
+    const html = await res.text();
+    const $ = cheerioLoad(html);
+    const items = [];
+    $('.results .vrwrap, .rb').each((_, el) => {
+      const a = $(el).find('h3 a, .vr-title a').first();
+      const title = a.text().trim();
+      const link = a.attr('href');
+      if (title && link) {
+        items.push({ source: 'Sogou', title, url: link });
+      }
+    });
+    console.log('[fetch] Sogou 返回', items.length, '条');
+    return items.slice(0, 10).map((item) => ({
+      ...item,
+      url: item.url.startsWith('/') ? `https://www.sogou.com${item.url}` : item.url
+    }));
+  } catch (e) {
+    console.error('[fetch] Sogou 错误:', e.message);
+    return [];
+  }
+}
+
+async function fetchSogouWeChat(query) {
+  try {
+    const url = `https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(query)}`;
+    const res = await safeFetch(url, { timeoutMs: 12000 });
+    if (!res.ok) return [];
+    const html = await res.text();
+    const $ = cheerioLoad(html);
+    const items = [];
+    $('.news-list li').each((_, el) => {
+      const a = $(el).find('.txt-box h3 a, .tit a').first();
+      const title = a.text().trim();
+      const link = a.attr('href');
+      if (title && link) {
+        const fullUrl = link.startsWith('/') ? `https://weixin.sogou.com${link}` : link;
+        items.push({ source: 'WeChat', title, url: fullUrl });
+      }
+    });
+    console.log('[fetch] Sogou 微信 返回', items.length, '条');
+    return items.slice(0, 8);
+  } catch (e) {
+    console.error('[fetch] Sogou 微信 错误:', e.message);
+    return [];
+  }
+}
+
+async function fetchBaidu(query) {
+  try {
+    const url = `https://www.baidu.com/s?wd=${encodeURIComponent(query)}&rn=10`;
+    const res = await safeFetch(url, { timeoutMs: 12000 });
+    if (!res.ok) return [];
+    const html = await res.text();
+    const $ = cheerioLoad(html);
+    const items = [];
+    $('#content_left .result, #content_left .c-container').each((_, el) => {
+      const a = $(el).find('h3 a').first();
+      const title = a.text().trim();
+      const link = a.attr('href');
+      if (title && link) {
+        items.push({ source: 'Baidu', title, url: link });
+      }
+    });
+    console.log('[fetch] Baidu 返回', items.length, '条');
+    return items.slice(0, 10);
+  } catch (e) {
+    console.error('[fetch] Baidu 错误:', e.message);
+    return [];
+  }
+}
+
+
+async function fetchHackerNews(query) {
+  try {
+    const url = `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=10`;
+    const res = await safeFetch(url, { timeoutMs: 12000 });
+    if (!res.ok) return [];
+    const json = await res.json();
+    const items = [];
+    (json.hits || []).forEach((hit) => {
+      items.push({
+        source: 'HackerNews',
+        title: hit.title || '',
+        url: hit.url || `https://news.ycombinator.com/item?id=${hit.objectID}`,
+        meta: {
+          points: hit.points,
+          num_comments: hit.num_comments,
+          author: hit.author,
+          createdAt: hit.created_at
+        }
+      });
+    });
+    console.log('[fetch] HN 返回', items.length, '条');
+    return items;
+  } catch (e) {
+    console.error('[fetch] HN 错误:', e.message);
+    return [];
+  }
+}
+
 async function fetchTwitter(query) {
   if (!TWITTERAPI_KEY) {
     return [];
@@ -291,17 +408,28 @@ async function fetchTwitter(query) {
     return [];
   }
   const json = await res.json();
-  return (json.tweets || []).slice(0, 15).map((tweet) => ({
+  const rawTweets = (json.tweets || []).slice(0, 30).map((tweet) => ({
     source: 'Twitter',
     title: tweet.text?.slice(0, 120) || 'Twitter update',
     url: tweet.url || `https://twitter.com/i/web/status/${tweet.id}`,
     meta: {
       author: tweet.author?.userName,
       createdAt: tweet.createdAt,
-      likeCount: tweet.likeCount,
-      retweetCount: tweet.retweetCount
+      likeCount: tweet.likeCount || 0,
+      retweetCount: tweet.retweetCount || 0
     }
   }));
+
+  // 质量过滤
+  const filtered = rawTweets.filter((t) => {
+    if (t.title.startsWith('@')) return false;
+    if (t.title.length < 20) return false;
+    if ((t.meta.likeCount || 0) < 3 && (t.meta.retweetCount || 0) < 1) return false;
+    return true;
+  });
+
+  console.log('[fetch] Twitter 原始', rawTweets.length, '条 → 过滤后', filtered.length, '条');
+  return filtered.slice(0, 8);
 }
 
 async function callDeepSeek(prompt) {
@@ -433,6 +561,9 @@ async function scanHotspots(trigger = 'automatic') {
     candidatePromises.push(fetchBingSearch(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] Bing 错误:', e.message); return []; }));
     candidatePromises.push(fetchDuckDuckGo(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] DDG 错误:', e.message); return []; }));
     candidatePromises.push(fetchBingNews(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] News 错误:', e.message); return []; }));
+    candidatePromises.push(fetchSogou(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] Sogou 错误:', e.message); return []; }));
+    candidatePromises.push(fetchSogouWeChat(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] WeChat 错误:', e.message); return []; }));
+    candidatePromises.push(fetchHackerNews(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] HN 错误:', e.message); return []; }));
     await throttleWait(800);
     candidatePromises.push(fetchTwitter(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] Twitter 错误:', e.message); return []; }));
     await throttleWait(800);
@@ -585,6 +716,42 @@ app.post('/api/subscribe', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message || '订阅保存失败' });
   }
+});
+
+app.post('/api/test-notify', async (req, res) => {
+  const { type } = req.body;
+  const results = {};
+
+  if (!type || type === 'email') {
+    if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS || EMAIL_RECIPIENTS.length === 0) {
+      results.email = { success: false, error: 'SMTP 未完整配置' };
+    } else {
+      try {
+        const sent = await sendEmailNotification(
+          '[测试] 热点瞭望台邮件通知',
+          '这是来自热点瞭望台的测试邮件。\n\n如果你收到此邮件，说明邮件通知功能配置正常。'
+        );
+        results.email = { success: true, recipients: EMAIL_RECIPIENTS };
+      } catch (e) {
+        results.email = { success: false, error: e.message };
+      }
+    }
+  }
+
+  if (!type || type === 'push') {
+    try {
+      await sendBrowserNotification({
+        title: '[测试] 热点瞭望台推送通知',
+        body: '浏览器推送通知功能配置正常！',
+        url: '/'
+      });
+      results.push = { success: true, subscriptionCount: (await getSubscriptions()).length };
+    } catch (e) {
+      results.push = { success: false, error: e.message };
+    }
+  }
+
+  res.json(results);
 });
 
 app.get('/api/health', async (req, res) => {

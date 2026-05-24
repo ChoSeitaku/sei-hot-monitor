@@ -1,0 +1,144 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: #050510;
+    color: #e2e8f0;
+    overflow-x: hidden;
+    min-height: 100vh;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(6, 182, 212, 0.3);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(6, 182, 212, 0.5);
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply relative rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl;
+  }
+
+  .glass-card-hover {
+    @apply glass-card transition-all duration-300 hover:border-primary/30 hover:bg-white/[0.05] hover:shadow-lg hover:shadow-primary/5;
+  }
+
+  .glow-border {
+    @apply relative;
+  }
+  .glow-border::after {
+    content: '';
+    @apply absolute inset-0 rounded-xl opacity-0 transition-opacity duration-500 pointer-events-none;
+    background: linear-gradient(135deg, rgba(6,182,212,0.15), transparent 50%, rgba(99,102,241,0.15));
+  }
+  .glow-border:hover::after {
+    @apply opacity-100;
+  }
+
+  .bg-dot-grid {
+    background-image: radial-gradient(rgba(6, 182, 212, 0.08) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .bg-scan-line {
+    background: linear-gradient(180deg, transparent 0%, rgba(6,182,212,0.03) 50%, transparent 100%);
+  }
+
+  .tag-chip {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
+           border border-white/[0.08] bg-white/[0.04] text-slate-300
+           transition-all duration-200 hover:border-primary/40 hover:bg-primary/10 hover:text-primary-glow;
+  }
+
+  .source-chip {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium
+           border border-primary/20 bg-primary/5 text-primary-glow;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-2.5 rounded-lg text-sm
+           bg-white/[0.04] border border-white/[0.08] text-slate-200
+           placeholder:text-slate-500
+           focus:outline-none focus:border-primary/40 focus:ring-1 focus:ring-primary/20
+           transition-all duration-200;
+  }
+
+  .btn-primary {
+    @apply relative inline-flex items-center justify-center gap-2
+           px-5 py-2.5 rounded-lg text-sm font-semibold text-white
+           bg-gradient-to-r from-primary to-cyan-400
+           hover:from-cyan-400 hover:to-primary
+           transition-all duration-300
+           disabled:opacity-40 disabled:cursor-not-allowed
+           shadow-lg shadow-primary/20 hover:shadow-primary/40;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2
+           px-4 py-2 rounded-lg text-sm font-medium
+           border border-white/[0.08] bg-white/[0.03] text-slate-300
+           hover:border-primary/30 hover:bg-primary/5 hover:text-primary-glow
+           transition-all duration-200
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .stat-card {
+    @apply glass-card p-4 flex flex-col items-center justify-center gap-1
+           transition-all duration-300 hover:border-primary/20;
+  }
+
+  .hotspot-item {
+    @apply glass-card-hover p-4 cursor-pointer
+           animate-[fade-in_0.4s_ease-out];
+  }
+
+  .confidence-bar {
+    @apply h-1 rounded-full;
+    background: linear-gradient(90deg, #06b6d4, #22d3ee);
+  }
+}
+
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+@keyframes sparkle-fade {
+  0% { opacity: 0; transform: scale(0) translateY(0); }
+  50% { opacity: 1; }
+  100% { opacity: 0; transform: scale(1.5) translateY(-20px); }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary via-primary-glow to-accent-glow;
+  }
+
+  .text-gradient-warm {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-violet-400;
+  }
+}

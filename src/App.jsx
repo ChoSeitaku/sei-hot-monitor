@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Search, Zap, Settings2, Radio, Bell, Plus, X, ExternalLink,
-  TrendingUp, Activity, Clock, Globe, Layers
+  TrendingUp, Activity, Clock, Globe, Layers, ArrowDownWideNarrow, Flame, CalendarClock,
+  ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { WavyBackground } from './components/ui/wavy-background';
 import { Sparkles } from './components/ui/sparkles';
@@ -22,7 +23,22 @@ const API = {
   subscribe: '/api/subscribe'
 };
 
-const SOURCES = ['Bing', 'Bing News', 'Sogou', 'Sogou 微信', 'HackerNews', 'Twitter'];
+const SOURCES = ['Bing', 'Bing News', 'Sogou', 'WeChat', 'Bilibili', 'HackerNews', 'Twitter'];
+const PAGE_SIZE = 10;
+
+function buildPageRange(current, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const wanted = new Set([1, total, current, current - 1, current + 1]);
+  const pages = [...wanted].filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
+  const result = [];
+  let prev = 0;
+  for (const p of pages) {
+    if (p - prev > 1) result.push('…');
+    result.push(p);
+    prev = p;
+  }
+  return result;
+}
 
 function formatTime(value) {
   if (!value) return '--';
@@ -77,7 +93,149 @@ export default function App() {
   const [topicScope, setTopicScope] = useState('');
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushMessage, setPushMessage] = useState('');
+  const [pushBusy, setPushBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortMode, setSortMode] = useState('relevance');
+  const [selectedSources, setSelectedSources] = useState([]);
+
+  const availableSources = useMemo(() => {
+    const counts = {};
+    hotspots.forEach((item) => {
+      const s = item.source || 'Unknown';
+      counts[s] = (counts[s] || 0) + 1;
+    });
+    const ordered = [];
+    SOURCES.forEach((s) => {
+      if (counts[s]) ordered.push({ source: s, count: counts[s] });
+    });
+    Object.keys(counts).forEach((s) => {
+      if (!SOURCES.includes(s)) ordered.push({ source: s, count: counts[s] });
+    });
+    return ordered;
+  }, [hotspots]);
+
+  const toggleSource = (s) => {
+    setSelectedSources((prev) =>
+      prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]
+    );
+  };
+
+  const filteredHotspots = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+    const hasSourceFilter = selectedSources.length > 0;
+    if (!tokens.length && !hasSourceFilter) return hotspots;
+    return hotspots.filter((item) => {
+      if (hasSourceFilter && !selectedSources.includes(item.source)) return false;
+      if (tokens.length === 0) return true;
+      const haystack = [
+        item.title,
+        item.summary,
+        item.source,
+        item.url,
+        item.query,
+        ...(Array.isArray(item.keywords) ? item.keywords : []),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return tokens.every((t) => haystack.includes(t));
+    });
+  }, [hotspots, searchQuery, selectedSources]);
+
+  const sortedHotspots = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+    const tsOf = (item) => {
+      const t = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+      return Number.isFinite(t) ? t : 0;
+    };
+    const pubTsOf = (item) => {
+      const raw = item.publishedAt || item.createdAt;
+      const t = raw ? new Date(raw).getTime() : 0;
+      return Number.isFinite(t) ? t : 0;
+    };
+
+    if (sortMode === 'hot') {
+      return [...filteredHotspots].sort((a, b) => {
+        const ca = a.confidence ?? 0;
+        const cb = b.confidence ?? 0;
+        if (cb !== ca) return cb - ca;
+        return tsOf(b) - tsOf(a);
+      });
+    }
+
+    if (sortMode === 'time') {
+      return [...filteredHotspots].sort((a, b) => tsOf(b) - tsOf(a));
+    }
+
+    if (sortMode === 'published') {
+      return [...filteredHotspots].sort((a, b) => {
+        const pa = pubTsOf(a);
+        const pb = pubTsOf(b);
+        // 有原生发布时间的项优先于仅有收录时间的项
+        const aHas = a.publishedAt ? 1 : 0;
+        const bHas = b.publishedAt ? 1 : 0;
+        if (aHas !== bHas) return bHas - aHas;
+        return pb - pa;
+      });
+    }
+
+    // relevance
+    if (tokens.length === 0) {
+      return [...filteredHotspots].sort((a, b) => tsOf(b) - tsOf(a));
+    }
+    const score = (item) => {
+      const title = (item.title || '').toLowerCase();
+      const summary = (item.summary || '').toLowerCase();
+      const query = (item.query || '').toLowerCase();
+      let s = 0;
+      for (const t of tokens) {
+        if (!t) continue;
+        if (query === t) s += 8;
+        else if (query.includes(t)) s += 4;
+        if (title.includes(t)) s += 5;
+        if (summary.includes(t)) s += 2;
+        // 标题前缀加权
+        if (title.startsWith(t)) s += 2;
+      }
+      return s;
+    };
+    return [...filteredHotspots].sort((a, b) => {
+      const sa = score(a);
+      const sb = score(b);
+      if (sb !== sa) return sb - sa;
+      return tsOf(b) - tsOf(a);
+    });
+  }, [filteredHotspots, sortMode, searchQuery]);
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const listRef = useRef(null);
+
+  const pageCount = Math.max(1, Math.ceil(sortedHotspots.length / PAGE_SIZE));
+  const safePage = Math.min(Math.max(1, currentPage), pageCount);
+  const paginatedHotspots = useMemo(
+    () => sortedHotspots.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [sortedHotspots, safePage]
+  );
+
+  // 当筛选/排序/搜索发生变化导致总页数变小或上下文重置时，回到第 1 页
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, sortMode, selectedSources]);
+
+  // 切页时把列表容器滚动到顶部
+  useEffect(() => {
+    if (listRef.current) {
+      listRef.current.scrollTop = 0;
+    }
+  }, [safePage]);
+
+  const goToPage = (n) => {
+    const target = Math.min(Math.max(1, n), pageCount);
+    setCurrentPage(target);
+  };
 
   useEffect(() => {
     refresh();
@@ -87,13 +245,10 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window) {
-      navigator.serviceWorker.getRegistration().then((reg) => {
-        if (reg) {
-          reg.pushManager.getSubscription().then((sub) => {
-            setPushEnabled(!!sub);
-          });
-        }
-      });
+      navigator.serviceWorker.register('/service-worker.js')
+        .then((reg) => reg.pushManager.getSubscription())
+        .then((sub) => setPushEnabled(!!sub))
+        .catch((err) => console.error('[push] 初始检测失败:', err));
     }
   }, []);
 
@@ -203,6 +358,8 @@ export default function App() {
   };
 
   const subscribePush = async () => {
+    if (pushBusy) return;
+    console.log('[push] 点击订阅按钮');
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
       flash('浏览器不支持 Web Push', true);
       return;
@@ -211,26 +368,34 @@ export default function App() {
       flash('请先在浏览器设置中允许通知', true);
       return;
     }
+    setPushBusy(true);
     try {
+      console.log('[push] 注册 service worker...');
       const reg = await navigator.serviceWorker.register('/service-worker.js');
-      // 如果存在旧订阅（如 VAPID 密钥更换后），先取消
+      console.log('[push] SW 注册完成，等待 ready...');
+      await navigator.serviceWorker.ready;
+      console.log('[push] 检查现有订阅...');
       const existingSub = await reg.pushManager.getSubscription();
       if (existingSub) {
+        console.log('[push] 取消旧订阅...');
         await existingSub.unsubscribe();
       }
-      // 请求通知权限（如果尚未授权）
       if (Notification.permission !== 'granted') {
+        console.log('[push] 请求通知权限...');
         const perm = await Notification.requestPermission();
         if (perm !== 'granted') {
           flash('需要允许通知权限才能启用推送', true);
           return;
         }
       }
+      console.log('[push] 获取 VAPID public key...');
       const { publicKey } = await fetchJson(API.pushKey);
+      console.log('[push] 调用 pushManager.subscribe ...');
       const subscription = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(publicKey)
       });
+      console.log('[push] 上报订阅到后端...');
       await fetchJson(API.subscribe, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -238,8 +403,12 @@ export default function App() {
       });
       setPushEnabled(true);
       flash('推送订阅成功！');
+      console.log('[push] 完成');
     } catch (err) {
-      flash(err.message, true);
+      console.error('[push] 失败:', err);
+      flash(err.message || '推送订阅失败', true);
+    } finally {
+      setPushBusy(false);
     }
   };
 
@@ -452,9 +621,23 @@ export default function App() {
               <button
                 className={pushEnabled ? 'btn-secondary w-full text-xs' : 'btn-primary w-full text-xs'}
                 onClick={subscribePush}
+                disabled={pushBusy}
               >
-                <Bell className="w-3.5 h-3.5" />
-                {pushEnabled ? '推送已启用 (点击重新订阅)' : '启用浏览器推送'}
+                {pushBusy ? (
+                  <>
+                    <motion.div
+                      className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full"
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+                    />
+                    订阅中...
+                  </>
+                ) : (
+                  <>
+                    <Bell className="w-3.5 h-3.5" />
+                    {pushEnabled ? '推送已启用 (点击重新订阅)' : '启用浏览器推送'}
+                  </>
+                )}
               </button>
               {pushMessage && <p className="text-xs text-slate-500 mt-1.5 text-center">{pushMessage}</p>}
             </BentoGridItem>
@@ -474,11 +657,137 @@ export default function App() {
               <div className="flex items-center gap-2 mb-3">
                 <TrendingUp className="w-4 h-4 text-primary" />
                 <h2 className="text-sm font-semibold text-slate-200">最新热点</h2>
-                <span className="text-xs text-slate-600">({hotspots.length})</span>
+                <span className="text-xs text-slate-600">
+                  {(searchQuery.trim() || selectedSources.length > 0)
+                    ? `(${filteredHotspots.length}/${hotspots.length})`
+                    : `(${hotspots.length})`}
+                </span>
               </div>
 
-              <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
-                {hotspots.slice(0, 20).map((item, idx) => (
+              <div className="relative mb-3">
+                <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  className="input-field pl-9 pr-9 text-xs py-2"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="搜索已发现的热点（标题、摘要、来源、关键词）"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-white/[0.06] text-slate-500 hover:text-slate-300 transition-colors"
+                    aria-label="清空搜索"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <div className="inline-flex rounded-lg border border-white/[0.08] bg-white/[0.03] p-0.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setSortMode('relevance')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-colors ${
+                      sortMode === 'relevance'
+                        ? 'bg-primary/15 text-primary-glow'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                    title="按相关性排序（有搜索词时按匹配度，否则按时间）"
+                  >
+                    <ArrowDownWideNarrow className="w-3 h-3" />
+                    相关性
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSortMode('hot')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-colors ${
+                      sortMode === 'hot'
+                        ? 'bg-primary/15 text-primary-glow'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                    title="按热度排序（AI 置信度）"
+                  >
+                    <Flame className="w-3 h-3" />
+                    热度
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSortMode('time')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-colors ${
+                      sortMode === 'time'
+                        ? 'bg-primary/15 text-primary-glow'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                    title="按收录时间排序（扫描发现时间，最新在前）"
+                  >
+                    <Clock className="w-3 h-3" />
+                    收录
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSortMode('published')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-colors ${
+                      sortMode === 'published'
+                        ? 'bg-primary/15 text-primary-glow'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                    title="按信息发布时间排序（来自来源的原始时间，缺失则回退收录时间）"
+                  >
+                    <CalendarClock className="w-3 h-3" />
+                    发布
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-600">
+                  {sortMode === 'hot'
+                    ? '按置信度'
+                    : sortMode === 'time'
+                    ? '按收录时间'
+                    : sortMode === 'published'
+                    ? '按发布时间'
+                    : searchQuery.trim()
+                    ? '按匹配度'
+                    : '按收录时间'}
+                </span>
+              </div>
+
+              {availableSources.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                  <span className="text-[10px] text-slate-600 mr-0.5">来源:</span>
+                  {availableSources.map(({ source, count }) => {
+                    const active = selectedSources.includes(source);
+                    return (
+                      <button
+                        key={source}
+                        type="button"
+                        onClick={() => toggleSource(source)}
+                        className={`text-[10px] px-2 py-0.5 rounded-md border transition-colors ${
+                          active
+                            ? 'bg-primary/15 text-primary-glow border-primary/40'
+                            : 'bg-white/[0.04] text-slate-400 border-white/[0.08] hover:bg-white/[0.08] hover:text-slate-200'
+                        }`}
+                      >
+                        {source}
+                        <span className="ml-1 opacity-60">{count}</span>
+                      </button>
+                    );
+                  })}
+                  {selectedSources.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSources([])}
+                      className="text-[10px] px-2 py-0.5 rounded-md text-slate-500 hover:text-slate-300 transition-colors inline-flex items-center gap-1"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                      清除
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div ref={listRef} className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+                {paginatedHotspots.map((item, idx) => (
                   <motion.div
                     key={item.id}
                     className="hotspot-item rounded-xl"
@@ -488,7 +797,7 @@ export default function App() {
                   >
                     <div className="flex items-start gap-3">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
                             item.source === 'HackerNews'
                               ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
@@ -500,11 +809,38 @@ export default function App() {
                               ? 'bg-sky-500/10 text-sky-400 border border-sky-500/20'
                               : item.source === 'Bing News'
                               ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                              : item.source === 'Bilibili'
+                              ? 'bg-pink-500/10 text-pink-400 border border-pink-500/20'
                               : 'bg-primary/10 text-primary border border-primary/20'
                           }`}>
                             {item.source}
                           </span>
-                          <span className="text-[10px] text-slate-600">{formatTime(item.createdAt)}</span>
+                          {item.query && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSearchQuery(item.query);
+                              }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded font-medium border transition-colors ${
+                                searchQuery.trim().toLowerCase() === item.query.toLowerCase()
+                                  ? 'bg-primary/20 text-primary-glow border-primary/40'
+                                  : 'bg-white/[0.04] text-slate-400 border-white/[0.08] hover:bg-primary/10 hover:text-primary-glow hover:border-primary/30'
+                              }`}
+                              title={`筛选关键词「${item.query}」`}
+                            >
+                              # {item.query}
+                            </button>
+                          )}
+                          <span className="text-[10px] text-slate-600" title="收录时间（扫描发现时间）">{formatTime(item.createdAt)}</span>
+                          {item.publishedAt && (
+                            <span
+                              className="text-[10px] text-slate-500"
+                              title={`发布时间：${new Date(item.publishedAt).toLocaleString('zh-CN')}`}
+                            >
+                              · 发布 {formatTime(item.publishedAt)}
+                            </span>
+                          )}
                         </div>
                         <a
                           href={item.url}
@@ -543,7 +879,71 @@ export default function App() {
                     <p className="text-slate-600 text-xs mt-1">添加关键词并执行扫描即可发现热点</p>
                   </div>
                 )}
+                {hotspots.length > 0 && filteredHotspots.length === 0 && (
+                  <div className="glass-card p-8 text-center">
+                    <Search className="w-8 h-8 text-slate-700 mx-auto mb-3" />
+                    <p className="text-slate-500 text-sm">未找到匹配的热点</p>
+                    <p className="text-slate-600 text-xs mt-1">尝试其他关键词，或调整/清除来源筛选</p>
+                  </div>
+                )}
               </div>
+
+              {sortedHotspots.length > 0 && (
+                <div className="flex items-center justify-between gap-3 mt-3 pt-3 border-t border-white/[0.05] text-[11px]">
+                  <span className="text-slate-600">
+                    共 <span className="text-slate-400 font-medium">{sortedHotspots.length}</span> 条
+                    {pageCount > 1 && (
+                      <>
+                        {' · 第 '}
+                        <span className="text-slate-400 font-medium">{safePage}</span>
+                        {' / '}
+                        <span className="text-slate-400 font-medium">{pageCount}</span>
+                        {' 页'}
+                      </>
+                    )}
+                  </span>
+                  {pageCount > 1 && (
+                    <div className="flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => goToPage(safePage - 1)}
+                        disabled={safePage <= 1}
+                        className="w-6 h-6 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent transition-colors"
+                        aria-label="上一页"
+                      >
+                        <ChevronLeft className="w-3 h-3" />
+                      </button>
+                      {buildPageRange(safePage, pageCount).map((p, i) =>
+                        p === '…' ? (
+                          <span key={`ellipsis-${i}`} className="px-1 text-slate-600">…</span>
+                        ) : (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => goToPage(p)}
+                            className={`min-w-[1.5rem] h-6 px-1.5 inline-flex items-center justify-center rounded-md font-mono transition-colors ${
+                              p === safePage
+                                ? 'bg-primary/15 text-primary-glow'
+                                : 'text-slate-500 hover:text-slate-200 hover:bg-white/[0.06]'
+                            }`}
+                          >
+                            {p}
+                          </button>
+                        )
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => goToPage(safePage + 1)}
+                        disabled={safePage >= pageCount}
+                        className="w-6 h-6 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent transition-colors"
+                        aria-label="下一页"
+                      >
+                        <ChevronRight className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Notifications 1/3 */}
@@ -572,6 +972,7 @@ export default function App() {
                         : item.source === 'Sogou' ? 'bg-emerald-500/10 text-emerald-400'
                         : item.source === 'WeChat' ? 'bg-green-500/10 text-green-400'
                         : item.source === 'Twitter' ? 'bg-sky-500/10 text-sky-400'
+                        : item.source === 'Bilibili' ? 'bg-pink-500/10 text-pink-400'
                         : 'bg-primary/10 text-primary'
                       }`}>
                         {item.source}

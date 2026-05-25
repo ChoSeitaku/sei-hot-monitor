@@ -8,6 +8,7 @@ import cron from 'node-cron';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import webPush from 'web-push';
+import { createHash } from 'crypto';
 
 dotenv.config();
 
@@ -276,7 +277,11 @@ async function fetchBingNews(query) {
       const title = $(el).text().trim();
       const link = $(el).attr('href');
       if (title && link) {
-        items.push({ source: 'Bing News', title, url: link });
+        const card = $(el).closest('.news-card, .newsitem, .nwsItm, .t_t');
+        const timeText = card.find('.source span, .source, .news-card_caption-time, [aria-label*="ago"], [aria-label*="前"]').first().text().trim()
+          || card.find('cite span').last().text().trim();
+        const publishedAt = parseRelativeTime(timeText);
+        items.push({ source: 'Bing News', title, url: link, publishedAt });
       }
     });
     console.log('[fetch] Bing News 返回', items.length, '条');
@@ -285,6 +290,20 @@ async function fetchBingNews(query) {
     console.error('[fetch] News 错误:', e.message);
     return [];
   }
+}
+
+function parseRelativeTime(text) {
+  if (!text) return null;
+  const now = Date.now();
+  const lower = text.toLowerCase();
+  let m;
+  if ((m = lower.match(/(\d+)\s*(minute|min|分钟)/))) return new Date(now - parseInt(m[1], 10) * 60 * 1000).toISOString();
+  if ((m = lower.match(/(\d+)\s*(hour|hr|小时)/))) return new Date(now - parseInt(m[1], 10) * 3600 * 1000).toISOString();
+  if ((m = lower.match(/(\d+)\s*(day|天)/))) return new Date(now - parseInt(m[1], 10) * 86400 * 1000).toISOString();
+  if ((m = lower.match(/(\d+)\s*(week|周)/))) return new Date(now - parseInt(m[1], 10) * 7 * 86400 * 1000).toISOString();
+  if ((m = lower.match(/(\d+)\s*(month|月)/))) return new Date(now - parseInt(m[1], 10) * 30 * 86400 * 1000).toISOString();
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 async function fetchSogou(query) {
@@ -339,6 +358,102 @@ async function fetchSogouWeChat(query) {
   }
 }
 
+const BILI_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const BILI_WBI_MIXIN_TAB = [
+  46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+  27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+  37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+  22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52
+];
+const biliState = { buvid3: '', imgKey: '', subKey: '', expiresAt: 0 };
+
+async function refreshBilibiliCreds() {
+  if (Date.now() < biliState.expiresAt && biliState.imgKey && biliState.buvid3) return;
+  // 拿 buvid3 cookie
+  const home = await safeFetch('https://www.bilibili.com/', {
+    timeoutMs: 10000,
+    headers: { 'User-Agent': BILI_UA }
+  });
+  const setCookies = home.headers.getSetCookie?.() || [];
+  for (const c of setCookies) {
+    const m = c.match(/buvid3=([^;]+)/);
+    if (m) { biliState.buvid3 = m[1]; break; }
+  }
+  // 拿 wbi 密钥
+  const nav = await safeFetch('https://api.bilibili.com/x/web-interface/nav', {
+    timeoutMs: 10000,
+    headers: {
+      'User-Agent': BILI_UA,
+      'Referer': 'https://www.bilibili.com/',
+      'Cookie': biliState.buvid3 ? `buvid3=${biliState.buvid3}` : ''
+    }
+  });
+  const navData = await nav.json();
+  const imgUrl = navData?.data?.wbi_img?.img_url || '';
+  const subUrl = navData?.data?.wbi_img?.sub_url || '';
+  biliState.imgKey = imgUrl.split('/').pop().split('.')[0];
+  biliState.subKey = subUrl.split('/').pop().split('.')[0];
+  biliState.expiresAt = Date.now() + 30 * 60 * 1000; // 缓存 30 分钟
+}
+
+function signBilibili(params) {
+  const orig = biliState.imgKey + biliState.subKey;
+  const mixinKey = BILI_WBI_MIXIN_TAB.map((i) => orig[i]).join('').slice(0, 32);
+  const wts = Math.floor(Date.now() / 1000);
+  const merged = { ...params, wts };
+  const sorted = Object.keys(merged).sort().map((k) => {
+    const v = String(merged[k]).replace(/[!'()*]/g, '');
+    return `${encodeURIComponent(k)}=${encodeURIComponent(v)}`;
+  }).join('&');
+  const wRid = createHash('md5').update(sorted + mixinKey).digest('hex');
+  return `${sorted}&w_rid=${wRid}`;
+}
+
+async function fetchBilibili(query) {
+  try {
+    await refreshBilibiliCreds();
+    if (!biliState.imgKey || !biliState.subKey) {
+      console.warn('[fetch] Bilibili 缺少 WBI 密钥，跳过');
+      return [];
+    }
+    const queryStr = signBilibili({
+      search_type: 'video',
+      keyword: query,
+      order: 'totalrank',
+      page: 1
+    });
+    const url = `https://api.bilibili.com/x/web-interface/wbi/search/type?${queryStr}`;
+    const res = await safeFetch(url, {
+      timeoutMs: 12000,
+      headers: {
+        'User-Agent': BILI_UA,
+        'Referer': 'https://search.bilibili.com/',
+        'Cookie': `buvid3=${biliState.buvid3}`
+      }
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (data.code !== 0) {
+      console.warn('[fetch] Bilibili 返回非 0:', data.code, data.message);
+      // 触发下次刷新凭据
+      biliState.expiresAt = 0;
+      return [];
+    }
+    const results = Array.isArray(data.data?.result) ? data.data.result : [];
+    const items = results.slice(0, 10).map((r) => ({
+      source: 'Bilibili',
+      title: (r.title || '').replace(/<[^>]+>/g, ''),
+      url: r.arcurl || `https://www.bilibili.com/video/${r.bvid}`,
+      publishedAt: r.pubdate ? new Date(r.pubdate * 1000).toISOString() : null
+    })).filter((item) => item.title && item.url);
+    console.log('[fetch] Bilibili 返回', items.length, '条');
+    return items;
+  } catch (e) {
+    console.error('[fetch] Bilibili 错误:', e.message);
+    return [];
+  }
+}
+
 async function fetchBaidu(query) {
   try {
     const url = `https://www.baidu.com/s?wd=${encodeURIComponent(query)}&rn=10`;
@@ -376,6 +491,7 @@ async function fetchHackerNews(query) {
         source: 'HackerNews',
         title: hit.title || '',
         url: hit.url || `https://news.ycombinator.com/item?id=${hit.objectID}`,
+        publishedAt: hit.created_at || null,
         meta: {
           points: hit.points,
           num_comments: hit.num_comments,
@@ -396,40 +512,59 @@ async function fetchTwitter(query) {
   if (!TWITTERAPI_KEY) {
     return [];
   }
-  const encoded = encodeURIComponent(query);
-  const url = `https://api.twitterapi.io/twitter/tweet/advanced_search?queryType=Latest&query=${encoded}`;
-  const res = await safeFetch(url, {
-    headers: {
-      'X-API-Key': TWITTERAPI_KEY,
-      Accept: 'application/json'
-    }
-  });
+  // 使用 Top 排序按互动量返回热门推文（排行榜）；附加 min_faves 进一步保证质量
+  const enhancedQuery = `${query} min_faves:5`;
+  const encoded = encodeURIComponent(enhancedQuery);
+  const url = `https://api.twitterapi.io/twitter/tweet/advanced_search?queryType=Top&query=${encoded}`;
+  let res;
+  try {
+    res = await safeFetch(url, {
+      headers: {
+        'X-API-Key': TWITTERAPI_KEY,
+        Accept: 'application/json'
+      }
+    });
+  } catch (e) {
+    console.error('[fetch] Twitter 网络错误:', e.message);
+    return [];
+  }
   if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    console.error(`[fetch] Twitter HTTP ${res.status}: ${errText.slice(0, 200)}`);
     return [];
   }
   const json = await res.json();
-  const rawTweets = (json.tweets || []).slice(0, 30).map((tweet) => ({
-    source: 'Twitter',
-    title: tweet.text?.slice(0, 120) || 'Twitter update',
-    url: tweet.url || `https://twitter.com/i/web/status/${tweet.id}`,
-    meta: {
-      author: tweet.author?.userName,
-      createdAt: tweet.createdAt,
-      likeCount: tweet.likeCount || 0,
-      retweetCount: tweet.retweetCount || 0
+  const tweetsArr = json.tweets || json.data || [];
+  const rawTweets = tweetsArr.slice(0, 30).map((tweet) => {
+    let publishedAt = null;
+    if (tweet.createdAt) {
+      const d = new Date(tweet.createdAt);
+      if (!Number.isNaN(d.getTime())) publishedAt = d.toISOString();
     }
-  }));
+    return {
+      source: 'Twitter',
+      title: tweet.text?.slice(0, 140) || 'Twitter update',
+      url: tweet.url || `https://twitter.com/i/web/status/${tweet.id}`,
+      publishedAt,
+      meta: {
+        author: tweet.author?.userName,
+        createdAt: tweet.createdAt,
+        likeCount: tweet.likeCount || 0,
+        retweetCount: tweet.retweetCount || 0,
+        viewCount: tweet.viewCount || 0
+      }
+    };
+  });
 
-  // 质量过滤
+  // Top 模式已按互动量排序，仅做轻量过滤：排除回复型短推（@开头）和极短文本
   const filtered = rawTweets.filter((t) => {
     if (t.title.startsWith('@')) return false;
-    if (t.title.length < 20) return false;
-    if ((t.meta.likeCount || 0) < 3 && (t.meta.retweetCount || 0) < 1) return false;
+    if (t.title.length < 15) return false;
     return true;
   });
 
-  console.log('[fetch] Twitter 原始', rawTweets.length, '条 → 过滤后', filtered.length, '条');
-  return filtered.slice(0, 8);
+  console.log(`[fetch] Twitter "${query}" → 原始 ${rawTweets.length} 条 → 过滤后 ${filtered.length} 条`);
+  return filtered.slice(0, 10);
 }
 
 async function callDeepSeek(prompt) {
@@ -505,6 +640,70 @@ function normalizeUrl(url) {
   return (url || '').replace(/\?.*$/, '').replace(/#.*$/, '');
 }
 
+// 把候选按「来源 × 查询关键词」双层公平轮询展平，并对单一来源设置硬配额，
+// 防止某个高产源（如 Bing）淹没小众源（如 HackerNews / Twitter）。
+function balanceCandidates(deduped, maxTotal = 60, minPerSource = 4) {
+  if (deduped.length === 0) return [];
+
+  // 第一层：按 source 分组，组内再按 query 分组并轮询展平为一个 source 队列
+  const perSourceQueues = [];
+  const bySource = new Map();
+  for (const item of deduped) {
+    const s = item.source || '__none__';
+    if (!bySource.has(s)) bySource.set(s, []);
+    bySource.get(s).push(item);
+  }
+  for (const [source, list] of bySource) {
+    const byQuery = new Map();
+    for (const item of list) {
+      const q = item.query || '__none__';
+      if (!byQuery.has(q)) byQuery.set(q, []);
+      byQuery.get(q).push(item);
+    }
+    const queryLists = [...byQuery.values()];
+    const queue = [];
+    let any = true;
+    for (let i = 0; any; i++) {
+      any = false;
+      for (const ql of queryLists) {
+        if (i < ql.length) {
+          queue.push(ql[i]);
+          any = true;
+        }
+      }
+    }
+    perSourceQueues.push({ source, queue });
+  }
+
+  // 每源配额：均分总额度，但不低于 minPerSource，也不超过该源实际可用数
+  const sourceCount = perSourceQueues.length;
+  const quota = Math.max(Math.ceil(maxTotal / sourceCount), minPerSource);
+  for (const entry of perSourceQueues) {
+    entry.queue = entry.queue.slice(0, quota);
+  }
+
+  // 第二层：跨 source 公平轮询
+  const interleaved = [];
+  let any = true;
+  for (let round = 0; any && interleaved.length < maxTotal; round++) {
+    any = false;
+    for (const entry of perSourceQueues) {
+      if (round < entry.queue.length) {
+        interleaved.push(entry.queue[round]);
+        any = true;
+        if (interleaved.length >= maxTotal) break;
+      }
+    }
+  }
+
+  const distribution = interleaved.reduce((acc, item) => {
+    acc[item.source] = (acc[item.source] || 0) + 1;
+    return acc;
+  }, {});
+  console.log('[scan] 送审源分布:', distribution, `(共 ${interleaved.length} 条; 每源配额 ${quota})`);
+  return interleaved;
+}
+
 async function classifyCandidate(candidate, scope) {
   const topic = (scope || '').trim() || 'AI / 人工智能';
   const query = candidate.query || topic;
@@ -563,6 +762,7 @@ async function scanHotspots(trigger = 'automatic') {
     candidatePromises.push(fetchBingNews(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] News 错误:', e.message); return []; }));
     candidatePromises.push(fetchSogou(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] Sogou 错误:', e.message); return []; }));
     candidatePromises.push(fetchSogouWeChat(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] WeChat 错误:', e.message); return []; }));
+    candidatePromises.push(fetchBilibili(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] Bilibili 错误:', e.message); return []; }));
     candidatePromises.push(fetchHackerNews(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] HN 错误:', e.message); return []; }));
     await throttleWait(800);
     candidatePromises.push(fetchTwitter(query).then((v) => v.map((item) => ({ query, ...item }))).catch(e => { console.error('[fetch] Twitter 错误:', e.message); return []; }));
@@ -582,26 +782,26 @@ async function scanHotspots(trigger = 'automatic') {
     }
   });
 
-  const byQuery = new Map();
-  for (const item of deduped) {
-    const q = item.query || '__none__';
-    if (!byQuery.has(q)) byQuery.set(q, []);
-    byQuery.get(q).push(item);
-  }
-  const interleaved = [];
-  let added = true;
-  for (let i = 0; added; i++) {
-    added = false;
-    for (const list of byQuery.values()) {
-      if (i < list.length) {
-        interleaved.push(list[i]);
-        added = true;
-      }
-    }
-  }
+  const rawDistribution = deduped.reduce((acc, item) => {
+    acc[item.source] = (acc[item.source] || 0) + 1;
+    return acc;
+  }, {});
+  console.log('[scan] 去重后源分布:', rawDistribution, '(共', deduped.length, '条)');
+
+  const pubCoverage = deduped.reduce((acc, item) => {
+    const s = item.source || 'Unknown';
+    if (!acc[s]) acc[s] = { withPub: 0, total: 0 };
+    acc[s].total += 1;
+    if (item.publishedAt) acc[s].withPub += 1;
+    return acc;
+  }, {});
+  const pubReport = Object.fromEntries(Object.entries(pubCoverage).map(([k, v]) => [k, `${v.withPub}/${v.total}`]));
+  console.log('[scan] 发布时间覆盖率:', pubReport);
+
+  const interleaved = balanceCandidates(deduped, 60);
 
   const newHotspots = [];
-  for (const candidate of interleaved.slice(0, 60)) {
+  for (const candidate of interleaved) {
     const classification = await classifyCandidate(candidate, config.scope);
     if (classification.isHot && classification.confidence >= 0.4) {
       const existing = hotspotsData.hotspots.find((entry) => entry.url && normalizeUrl(entry.url) === normalizeUrl(candidate.url));
@@ -616,6 +816,7 @@ async function scanHotspots(trigger = 'automatic') {
           reason: classification.reason,
           confidence: classification.confidence,
           createdAt: new Date().toISOString(),
+          publishedAt: candidate.publishedAt || null,
           trigger
         });
       }

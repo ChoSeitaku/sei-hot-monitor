@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, Zap, Settings2, Radio, Bell, Plus, X, ExternalLink,
   TrendingUp, Activity, Clock, Globe, Layers, ArrowDownWideNarrow, Flame, CalendarClock,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, ChevronDown, ChevronsDownUp, ChevronsUpDown,
+  Sparkle, Link2, Copy, Check, WandSparkles
 } from 'lucide-react';
 import { WavyBackground } from './components/ui/wavy-background';
 import { Sparkles } from './components/ui/sparkles';
@@ -98,6 +99,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortMode, setSortMode] = useState('relevance');
   const [selectedSources, setSelectedSources] = useState([]);
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
+  const [copiedId, setCopiedId] = useState('');
 
   const availableSources = useMemo(() => {
     const counts = {};
@@ -119,6 +122,36 @@ export default function App() {
     setSelectedSources((prev) =>
       prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]
     );
+  };
+
+  const toggleExpand = (id) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const copyToClipboard = async (text, id) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId((cur) => (cur === id ? '' : cur)), 1500);
+    } catch (err) {
+      flash('复制失败：' + (err.message || '剪贴板不可用'), true);
+    }
+  };
+
+  const formatExactTime = (value) => {
+    if (!value) return '--';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '--';
+    return d.toLocaleString('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    });
   };
 
   const filteredHotspots = useMemo(() => {
@@ -662,6 +695,40 @@ export default function App() {
                     ? `(${filteredHotspots.length}/${hotspots.length})`
                     : `(${hotspots.length})`}
                 </span>
+                {paginatedHotspots.length > 0 && (() => {
+                  const allExpanded = paginatedHotspots.every((it) => expandedIds.has(it.id));
+                  const handleToggleAll = () => {
+                    setExpandedIds((prev) => {
+                      const next = new Set(prev);
+                      if (allExpanded) {
+                        paginatedHotspots.forEach((it) => next.delete(it.id));
+                      } else {
+                        paginatedHotspots.forEach((it) => next.add(it.id));
+                      }
+                      return next;
+                    });
+                  };
+                  return (
+                    <button
+                      type="button"
+                      onClick={handleToggleAll}
+                      className="ml-auto inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-white/[0.08] bg-white/[0.03] text-slate-400 hover:text-primary-glow hover:border-primary/40 hover:bg-primary/10 transition-colors"
+                      title={allExpanded ? '折叠当前页全部条目' : '展开当前页全部条目'}
+                    >
+                      {allExpanded ? (
+                        <>
+                          <ChevronsDownUp className="w-3 h-3" />
+                          全部折叠
+                        </>
+                      ) : (
+                        <>
+                          <ChevronsUpDown className="w-3 h-3" />
+                          全部展开
+                        </>
+                      )}
+                    </button>
+                  );
+                })()}
               </div>
 
               <div className="relative mb-3">
@@ -787,7 +854,9 @@ export default function App() {
               )}
 
               <div ref={listRef} className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
-                {paginatedHotspots.map((item, idx) => (
+                {paginatedHotspots.map((item, idx) => {
+                  const isExpanded = expandedIds.has(item.id);
+                  return (
                   <motion.div
                     key={item.id}
                     className="hotspot-item rounded-xl"
@@ -846,12 +915,12 @@ export default function App() {
                           href={item.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-sm font-medium text-slate-200 hover:text-primary-glow transition-colors line-clamp-2 inline-flex items-start gap-1 group"
+                          className={`text-sm font-medium text-slate-200 hover:text-primary-glow transition-colors inline-flex items-start gap-1 group ${isExpanded ? '' : 'line-clamp-2'}`}
                         >
                           {item.title}
                           <ExternalLink className="w-3 h-3 mt-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-primary" />
                         </a>
-                        <p className="text-xs text-slate-500 mt-1 line-clamp-2">{item.summary}</p>
+                        <p className={`text-xs text-slate-500 mt-1 ${isExpanded ? 'whitespace-pre-line' : 'line-clamp-2'}`}>{item.summary}</p>
                         <div className="mt-2 flex items-center gap-2">
                           <div className="flex-1 h-1 bg-white/[0.06] rounded-full overflow-hidden">
                             <motion.div
@@ -867,11 +936,125 @@ export default function App() {
                           <span className="text-[10px] text-slate-500 font-mono w-8 text-right">
                             {Math.round((item.confidence || 0) * 100)}%
                           </span>
+                          <button
+                            type="button"
+                            onClick={() => toggleExpand(item.id)}
+                            className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md text-slate-500 hover:text-primary-glow hover:bg-primary/10 transition-colors"
+                            title={isExpanded ? '折叠' : '展开更多信息'}
+                            aria-expanded={isExpanded}
+                          >
+                            <motion.span
+                              animate={{ rotate: isExpanded ? 180 : 0 }}
+                              transition={{ duration: 0.2 }}
+                              className="inline-flex"
+                            >
+                              <ChevronDown className="w-3 h-3" />
+                            </motion.span>
+                            {isExpanded ? '收起' : '展开'}
+                          </button>
                         </div>
+
+                        <AnimatePresence initial={false}>
+                          {isExpanded && (
+                            <motion.div
+                              key="expanded"
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              exit={{ opacity: 0, height: 0 }}
+                              transition={{ duration: 0.25, ease: 'easeOut' }}
+                              className="overflow-hidden"
+                            >
+                              <div className="mt-3 pt-3 border-t border-white/[0.06] space-y-3">
+                                {item.reason && (
+                                  <div>
+                                    <div className="flex items-center gap-1.5 mb-1.5">
+                                      <WandSparkles className="w-3 h-3 text-primary" />
+                                      <span className="text-[10px] uppercase tracking-wider text-primary-glow font-semibold">AI 判定理由</span>
+                                    </div>
+                                    <p className="text-xs text-slate-400 leading-relaxed bg-primary/[0.04] border border-primary/[0.12] rounded-md p-2">
+                                      {item.reason}
+                                    </p>
+                                  </div>
+                                )}
+
+                                <div>
+                                  <div className="flex items-center gap-1.5 mb-1.5">
+                                    <Sparkle className="w-3 h-3 text-slate-500" />
+                                    <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">详细信息</span>
+                                  </div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+                                    <div className="flex items-baseline gap-1.5">
+                                      <span className="text-slate-600 shrink-0">收录</span>
+                                      <span className="text-slate-300 font-mono">{formatExactTime(item.createdAt)}</span>
+                                    </div>
+                                    <div className="flex items-baseline gap-1.5">
+                                      <span className="text-slate-600 shrink-0">发布</span>
+                                      <span className="text-slate-300 font-mono">{item.publishedAt ? formatExactTime(item.publishedAt) : '未提供'}</span>
+                                    </div>
+                                    <div className="flex items-baseline gap-1.5">
+                                      <span className="text-slate-600 shrink-0">触发</span>
+                                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                        item.trigger === 'manual'
+                                          ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                          : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                      }`}>
+                                        {item.trigger === 'manual' ? '手动扫描' : '定时自动'}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-baseline gap-1.5">
+                                      <span className="text-slate-600 shrink-0">置信</span>
+                                      <span className="text-slate-300 font-mono">{((item.confidence || 0)).toFixed(2)}</span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div className="flex items-center gap-1.5 mb-1.5">
+                                    <Link2 className="w-3 h-3 text-slate-500" />
+                                    <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">原文链接</span>
+                                  </div>
+                                  <div className="flex items-stretch gap-1.5">
+                                    <a
+                                      href={item.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="flex-1 min-w-0 text-[11px] font-mono text-slate-400 hover:text-primary-glow bg-white/[0.03] border border-white/[0.06] rounded-md px-2 py-1.5 truncate transition-colors"
+                                      title={item.url}
+                                    >
+                                      {item.url}
+                                    </a>
+                                    <button
+                                      type="button"
+                                      onClick={() => copyToClipboard(item.url, item.id)}
+                                      className="inline-flex items-center justify-center w-7 shrink-0 rounded-md border border-white/[0.08] bg-white/[0.03] text-slate-400 hover:text-primary-glow hover:border-primary/30 hover:bg-primary/10 transition-colors"
+                                      title="复制链接"
+                                    >
+                                      {copiedId === item.id ? (
+                                        <Check className="w-3 h-3 text-emerald-400" />
+                                      ) : (
+                                        <Copy className="w-3 h-3" />
+                                      )}
+                                    </button>
+                                    <a
+                                      href={item.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="inline-flex items-center justify-center w-7 shrink-0 rounded-md border border-white/[0.08] bg-white/[0.03] text-slate-400 hover:text-primary-glow hover:border-primary/30 hover:bg-primary/10 transition-colors"
+                                      title="在新标签打开"
+                                    >
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  </div>
+                                </div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                       </div>
                     </div>
                   </motion.div>
-                ))}
+                  );
+                })}
                 {hotspots.length === 0 && (
                   <div className="glass-card p-8 text-center">
                     <Layers className="w-8 h-8 text-slate-700 mx-auto mb-3" />
